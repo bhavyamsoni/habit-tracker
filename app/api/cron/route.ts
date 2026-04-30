@@ -1,13 +1,24 @@
 import { supabase } from "@/lib/supabase"
 
-export async function GET() {
-  const today = new Date().toISOString().split("T")[0]
+type Habit = {
+  id: string
+}
 
-  const { data: habits } = await supabase
+export async function GET() {
+  const today = new Date().toLocaleDateString("en-CA")
+
+  const { data: habits, error } = await supabase
     .from("habits")
     .select("id")
 
-  for (const habit of habits || []) {
+  if (error) {
+    return Response.json({ error: error.message }, { status: 500 })
+  }
+
+  // 👇 FIX: tell TS what habits are
+  const habitList = (habits || []) as Habit[]
+
+  for (const habit of habitList) {
     const { data: existing } = await supabase
       .from("habit_logs")
       .select("id")
