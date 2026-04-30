@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase"
 
-// Explicit types (fixes TS "never" issues)
+// Types
 type Habit = {
   id: string
 }
@@ -13,10 +13,10 @@ type HabitLog = {
 
 export async function GET() {
   try {
-    // Always use ISO format (safe for DB comparisons)
+    // ✅ Use consistent UTC date (same as DB)
     const today = new Date().toISOString().split("T")[0]
 
-    // Fetch all habits
+    // 1️⃣ Fetch all habits
     const { data: habits, error: habitError } = await supabase
       .from("habits")
       .select("id")
@@ -28,46 +28,67 @@ export async function GET() {
 
     const habitList = (habits || []) as Habit[]
 
-    // Loop through each habit
-    for (const habit of habitList) {
-      // Check if today's log already exists
-      const { data: existing, error: existingError } = await supabase
-        .from("habit_logs")
-        .select("id")
-        .eq("habit_id", habit.id)
-        .eq("date", today)
-        .maybeSingle()
-
-      if (existingError) {
-        console.error("Error checking existing log:", existingError)
-        continue
-      }
-
-      // If no log → mark as missed
-      if (!existing) {
-        const payload: HabitLog = {
-          habit_id: habit.id,
-          date: today,
-          status: "missed",
-        }
-
-        const { error: insertError } = await supabase
-          .from("habit_logs")
-          .insert([payload] as any) // force-cast to bypass TS schema issues
-
-        if (insertError) {
-          console.error("Insert failed:", insertError)
-        } else {
-          console.log(`Missed logged for habit ${habit.id} on ${today}`)
-        }
-      }
+    if (habitList.length === 0) {
+      return Response.json({
+        message: "No habits found",
+        date: today,
+        recordsInserted: 0,
+      })
     }
 
-    console.log("Cron executed successfully at:", new Date())
+    // 2️⃣ Fetch today's existing logs
+    const { data: existingLogs, error: logsError } = await supabase
+      .from("habit_logs")
+      .select("habit_id")
+      .eq("date", today)
+
+    if (logsError) {
+      console.error("Error fetching today's logs:", logsError)
+      return Response.json({ error: logsError.message }, { status: 500 })
+    }
+
+    const existingHabitIds = new Set(
+      (existingLogs || []).map((log: any) => log.habit_id)
+    )
+
+    // 3️⃣ Prepare missing logs
+    const missingLogsPayload: HabitLog[] = habitList
+      .filter((habit) => !existingHabitIds.has(habit.id))
+      .map((habit) => ({
+        habit_id: habit.id,
+        date: today,
+        status: "missed",
+      }))
+
+    // 4️⃣ Insert safely using UPSERT (prevents duplicates)
+    let insertedCount = 0
+
+    if (missingLogsPayload.length > 0) {
+      const { error: insertError } = await supabase
+        .from("habit_logs")
+        .upsert(missingLogsPayload as any, {
+          onConflict: "habit_id,date",
+        })
+
+      if (insertError) {
+        console.error("Upsert failed:", insertError)
+        return Response.json({ error: insertError.message }, { status: 500 })
+      }
+
+      insertedCount = missingLogsPayload.length
+      console.log(
+        `Inserted ${insertedCount} missed logs for ${today}`
+      )
+    } else {
+      console.log(`No missing logs for ${today}`)
+    }
+
+    console.log("Cron executed at:", new Date().toISOString())
 
     return Response.json({
       message: "Cron executed successfully",
       date: today,
+      recordsInserted: insertedCount,
     })
   } catch (err: any) {
     console.error("Cron crash:", err)
