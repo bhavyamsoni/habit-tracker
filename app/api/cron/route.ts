@@ -27,11 +27,13 @@ export async function GET() {
       .maybeSingle()
 
     if (!existing) {
-      await supabase.from("habit_logs").insert({
-        habit_id: habit.id,
-        date: today,
-        status: "missed",
-      })
+      await supabase.from("habit_logs").insert([
+        {
+          habit_id: habit.id,
+          date: today,
+          status: "missed",
+        },
+      ] as any)
     }
   }
 
