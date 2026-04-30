@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase"
 
-// Types
+// Explicit types
 type Habit = {
   id: string
 }
@@ -13,10 +13,10 @@ type HabitLog = {
 
 export async function GET() {
   try {
-    // ✅ Use consistent UTC date (same as DB)
+    // Always use ISO format (safe for DB comparisons)
     const today = new Date().toISOString().split("T")[0]
 
-    // 1️⃣ Fetch all habits
+    // 1. Fetch ALL habits at once
     const { data: habits, error: habitError } = await supabase
       .from("habits")
       .select("id")
@@ -28,15 +28,7 @@ export async function GET() {
 
     const habitList = (habits || []) as Habit[]
 
-    if (habitList.length === 0) {
-      return Response.json({
-        message: "No habits found",
-        date: today,
-        recordsInserted: 0,
-      })
-    }
-
-    // 2️⃣ Fetch today's existing logs
+    // 2. Fetch ALL existing logs for today at once
     const { data: existingLogs, error: logsError } = await supabase
       .from("habit_logs")
       .select("habit_id")
@@ -47,49 +39,44 @@ export async function GET() {
       return Response.json({ error: logsError.message }, { status: 500 })
     }
 
-    const existingHabitIds = new Set(
-      (existingLogs || []).map((log: any) => log.habit_id)
-    )
+    // 3. Create a Set of habit IDs that already have a log today
+    // Using a Set makes the lookup O(1) instead of O(N)
+    const existingHabitIds = new Set(existingLogs?.map(log => log.habit_id))
 
-    // 3️⃣ Prepare missing logs
+    // 4. Filter out habits that already have logs, and prepare the insert payload
     const missingLogsPayload: HabitLog[] = habitList
-      .filter((habit) => !existingHabitIds.has(habit.id))
-      .map((habit) => ({
+      .filter(habit => !existingHabitIds.has(habit.id))
+      .map(habit => ({
         habit_id: habit.id,
         date: today,
         status: "missed",
       }))
 
-    // 4️⃣ Insert safely using UPSERT (prevents duplicates)
-    let insertedCount = 0
-
+    // 5. Bulk insert the missed logs (Only run if there are actual missing logs)
     if (missingLogsPayload.length > 0) {
       const { error: insertError } = await supabase
         .from("habit_logs")
-        .upsert(missingLogsPayload as any, {
-          onConflict: "habit_id,date",
-        })
+        // Note: Using `as any` to bypass TS until you generate Supabase schema types
+        .insert(missingLogsPayload as any) 
 
       if (insertError) {
-        console.error("Upsert failed:", insertError)
+        console.error("Bulk insert failed:", insertError)
         return Response.json({ error: insertError.message }, { status: 500 })
       }
-
-      insertedCount = missingLogsPayload.length
-      console.log(
-        `Inserted ${insertedCount} missed logs for ${today}`
-      )
+      
+      console.log(`Successfully logged ${missingLogsPayload.length} missed habits for ${today}.`)
     } else {
-      console.log(`No missing logs for ${today}`)
+      console.log(`All habits are up to date for ${today}. Nothing to log!`)
     }
 
-    console.log("Cron executed at:", new Date().toISOString())
+    console.log("Cron executed successfully at:", new Date())
 
     return Response.json({
       message: "Cron executed successfully",
       date: today,
-      recordsInserted: insertedCount,
+      recordsInserted: missingLogsPayload.length
     })
+
   } catch (err: any) {
     console.error("Cron crash:", err)
 
